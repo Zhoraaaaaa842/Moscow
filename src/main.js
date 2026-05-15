@@ -4,14 +4,18 @@ import { getDistrictInfo, getOkrugList, getDistrictsByOkrug, DISTRICTS_META } fr
 //  TAURI — безопасный импорт
 // =============================================
 let tauriInvoke = null;
-try {
-  const { invoke } = await import('@tauri-apps/api/core');
-  tauriInvoke = invoke;
-} catch (_) {
-  tauriInvoke = async (cmd, args) => {
-    if (cmd === 'get_visited_districts') return JSON.parse(localStorage.getItem('visited') || '[]');
-    if (cmd === 'save_visited_districts') { localStorage.setItem('visited', JSON.stringify(args.districts)); return true; }
-  };
+
+async function initTauriBridge() {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    tauriInvoke = invoke;
+  } catch (_) {
+    tauriInvoke = async (cmd, args) => {
+      if (cmd === 'get_visited_districts') return JSON.parse(localStorage.getItem('visited') || '[]');
+      if (cmd === 'save_visited_districts') { localStorage.setItem('visited', JSON.stringify(args.districts)); return true; }
+      return null;
+    };
+  }
 }
 
 // =============================================
@@ -21,7 +25,8 @@ let map, geojsonLayer, geojsonData = null;
 let visitedDistricts = new Set();
 let activeDistrict = null;
 let activeOkrug = 'Все';
-const TOTAL = 125;
+const DISTRICT_NAMES = new Set(Object.keys(DISTRICTS_META));
+const TOTAL = DISTRICT_NAMES.size;
 
 // =============================================
 //  КАРТА
@@ -59,7 +64,20 @@ async function loadGeoJSON() {
     console.warn('Overpass недоступен, используем fallback:', e);
     geojsonData = getFallbackGeoJSON();
   }
+  geojsonData = normalizeGeoJSONToKnownDistricts(geojsonData);
   renderGeoJSON();
+}
+
+function normalizeGeoJSONToKnownDistricts(data) {
+  if (!data?.features?.length) return getFallbackGeoJSON();
+  const byName = new Map();
+  for (const feature of data.features) {
+    const name = getDistrictName(feature);
+    if (!DISTRICT_NAMES.has(name)) continue;
+    if (!byName.has(name)) byName.set(name, feature);
+  }
+  if (!byName.size) return getFallbackGeoJSON();
+  return { type: 'FeatureCollection', features: [...byName.values()] };
 }
 
 function overpassToGeoJSON(data) {
@@ -140,16 +158,21 @@ function selectDistrict(name, layer) {
 
 function selectRandom() {
   if (!geojsonData?.features?.length) return;
-  const pool = geojsonData.features.filter(f => {
+  const scoped = geojsonData.features.filter(f => {
     const n = getDistrictName(f);
-    const inOkrug = activeOkrug === 'Все' || DISTRICTS_META[n]?.okrug === activeOkrug;
-    const notVisited = !visitedDistricts.has(n);
-    return inOkrug && notVisited;
+    return activeOkrug === 'Все' || DISTRICTS_META[n]?.okrug === activeOkrug;
   });
-  const all = activeOkrug === 'Все'
-    ? geojsonData.features
-    : geojsonData.features.filter(f => DISTRICTS_META[getDistrictName(f)]?.okrug === activeOkrug);
-  const pick = (pool.length > 0 ? pool : all)[Math.floor(Math.random() * (pool.length || all.length))];
+  if (!scoped.length) {
+    showToast('Для выбранного округа нет доступных районов');
+    return;
+  }
+  const pool = scoped.filter(f => {
+    const n = getDistrictName(f);
+    const notVisited = !visitedDistricts.has(n);
+    return notVisited;
+  });
+  const source = pool.length > 0 ? pool : scoped;
+  const pick = source[Math.floor(Math.random() * source.length)];
   if (!pick) return;
   const name = getDistrictName(pick);
   let targetLayer = null;
@@ -438,8 +461,13 @@ document.getElementById('btn-export').addEventListener('click', exportRoute);
 // =============================================
 //  СТАРТ
 // =============================================
-initMap();
-initOkrugFilters();
-initSearch();
-await loadVisited();
-await loadGeoJSON();
+async function bootstrap() {
+  await initTauriBridge();
+  initMap();
+  initOkrugFilters();
+  initSearch();
+  await loadVisited();
+  await loadGeoJSON();
+}
+
+bootstrap();
