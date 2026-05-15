@@ -40,31 +40,20 @@ function initMap() {
 }
 
 // =============================================
-//  GeoJSON — загрузка с Overpass API
+//  GeoJSON — загрузка из бандла (public/)
 // =============================================
 async function loadGeoJSON() {
-  // Запрашиваем все районы Москвы через Overpass API
-  const query = `
-    [out:json][timeout:60];
-    area["name"="Москва"][admin_level=2]->.moscow;
-    (
-      relation["admin_level"="8"]["boundary"="administrative"](area.moscow);
-    );
-    out geom;
-  `;
   try {
-    const res = await fetch('https://overpass-api.de/api/interpreter', {
-      method: 'POST',
-      body: 'data=' + encodeURIComponent(query),
-    });
-    if (!res.ok) throw new Error('Overpass failed');
+    const res = await fetch('/moscow-districts.geojson');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    geojsonData = overpassToGeoJSON(data);
+    if (!data?.features?.length) throw new Error('пустой файл');
+    geojsonData = normalizeGeoJSONToKnownDistricts(data);
+    console.log(`✓ Загружено ${geojsonData.features.length} районов из локального файла`);
   } catch (e) {
-    console.warn('Overpass недоступен, используем fallback:', e);
+    console.warn('Локальный GeoJSON недоступен, используем fallback:', e);
     geojsonData = getFallbackGeoJSON();
   }
-  geojsonData = normalizeGeoJSONToKnownDistricts(geojsonData);
   renderGeoJSON();
 }
 
@@ -78,27 +67,6 @@ function normalizeGeoJSONToKnownDistricts(data) {
   }
   if (!byName.size) return getFallbackGeoJSON();
   return { type: 'FeatureCollection', features: [...byName.values()] };
-}
-
-function overpassToGeoJSON(data) {
-  const features = [];
-  for (const el of data.elements) {
-    if (el.type !== 'relation' || !el.members) continue;
-    const name = el.tags?.name || el.tags?.['name:ru'] || 'Неизвестный район';
-    // Собираем кольца из members
-    const outerWays = el.members.filter(m => m.type === 'way' && m.role === 'outer');
-    if (!outerWays.length) continue;
-    // Берём первый outer way как полигон
-    const coords = outerWays[0].geometry?.map(p => [p.lon, p.lat]) || [];
-    if (coords.length < 3) continue;
-    if (coords[0][0] !== coords[coords.length-1][0]) coords.push(coords[0]);
-    features.push({
-      type: 'Feature',
-      properties: { name },
-      geometry: { type: 'Polygon', coordinates: [coords] },
-    });
-  }
-  return { type: 'FeatureCollection', features };
 }
 
 function getDistrictName(feature) {
